@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NBA Props</title><style>
+body{margin:0;font:15px system-ui;background:#0f1115;color:#e8e8e8}header{position:sticky;top:0;background:#171a21;padding:10px;z-index:2}
+input,select{width:100%;padding:10px;margin:4px 0;border-radius:8px;border:0;background:#262b36;color:#fff;font-size:16px}
+.c{margin:8px;padding:12px;border-radius:12px;background:#1b1f28}.r{display:flex;justify-content:space-between}
+.o{color:#4ade80}.u{color:#f87171}small{color:#9aa}</style></head><body>
+<header><b>NBA Prop Projections</b> <small id=up></small>
+<input id=q placeholder="Search player/team"><select id=m><option value="">All stats</option>
+<option>PTS</option><option>REB</option><option>AST</option><option>FG3M</option><option>STL</option><option>BLK</option></select>
+<select id=e><option value=0>All edges</option><option value=.04>Edge &ge; 4%</option><option value=.08>Edge &ge; 8%</option></select></header>
+<div id=l></div><script>
+let D=[];async function load(){const j=await (await fetch('data.json?'+Date.now())).json();D=j.props;
+up.textContent='updated '+new Date(j.updated).toLocaleTimeString();draw()}
+function draw(){const s=q.value.toLowerCase(),mm=m.value,ed=+e.value;
+l.innerHTML=D.filter(r=>(!s||(r.player+r.team+r.opp).toLowerCase().includes(s))&&(!mm||r.market==mm)&&Math.abs(r.edge)>=ed).map(r=>
+`<div class=c><div class=r><b>${r.player}</b><span class=${r.pick=='OVER'?'o':'u'}>${r.pick} ${r.line} ${r.market}</span></div>
+<div class=r><small>${r.team} vs ${r.opp} &middot; ${r.status}</small><span>Proj <b>${r.proj}</b></span></div>
+<div class=r><small>Model ${(r.p_over*100).toFixed(0)}% over &middot; Mkt ${(r.mkt_p_over*100).toFixed(0)}%</small><span>Edge ${(r.edge*100).toFixed(1)}%</span></div>
+<small>Play ${(r.play_prob*100).toFixed(0)}% &middot; Usage +${(r.usage_boost*100).toFixed(0)}% &middot; Spread ${r.spread}</small><br>
+<small>O ${r.best_over} | U ${r.best_under}</small></div>`).join('')}
+[q,m,e].forEach(x=>x.oninput=draw);load();setInterval(load,300000)</script></body></html>
