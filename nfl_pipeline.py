@@ -49,6 +49,8 @@ def main():
     if events:
         season = now.year if now.month >= 8 else now.year-1
         g = nfl.load_player_stats([season-1, season]).to_pandas()
+        if 'recent_team' not in g.columns and 'team' in g.columns:
+            g = g.rename(columns={'team': 'recent_team'})
         required = {'season','week','player_id','player_display_name','recent_team'} | {v[1] for v in MARKETS.values()}
         if not required.issubset(g.columns):
             raise RuntimeError('Unexpected nflverse columns: '+str(sorted(required-set(g.columns))))
