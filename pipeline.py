@@ -1,10 +1,9 @@
 """NBA prop projection pipeline. Run: python pipeline.py  (needs ODDS_API_KEY env)"""
 import os, json, math, datetime as dt, requests, numpy as np, pandas as pd
 from scipy import stats as st
-from nba_api.stats.endpoints import playergamelogs, leaguedashteamstats
-from nba_api.stats.static import teams as nbateams
+from espn_data import update_history, norm
 
-SEASON, PREV = "2026-27", ["2025-26", "2024-25"]
+SEASON_START = pd.Timestamp("2026-10-20")
 KEY = os.environ.get("ODDS_API_KEY", "")
 BASE = "https://api.the-odds-api.com/v4/sports/basketball_nba"
 MARKETS = {"player_points":"PTS","player_rebounds":"REB","player_assists":"AST",
@@ -13,26 +12,33 @@ OUT = "docs/data.json"
 HDR = {"User-Agent": "Mozilla/5.0"}
 P_PLAY = {"out":0.0,"doubtful":0.1,"questionable":0.5,"day-to-day":0.7,"probable":0.9}
 K_PRIOR, W_LAST = 400.0, 0.35   # tune with backtest.py
+TEAM_ABBR = {"Atlanta Hawks":"ATL","Boston Celtics":"BOS","Brooklyn Nets":"BKN","Charlotte Hornets":"CHA",
+ "Chicago Bulls":"CHI","Cleveland Cavaliers":"CLE","Dallas Mavericks":"DAL","Denver Nuggets":"DEN",
+ "Detroit Pistons":"DET","Golden State Warriors":"GSW","Houston Rockets":"HOU","Indiana Pacers":"IND",
+ "Los Angeles Clippers":"LAC","LA Clippers":"LAC","Los Angeles Lakers":"LAL","Memphis Grizzlies":"MEM",
+ "Miami Heat":"MIA","Milwaukee Bucks":"MIL","Minnesota Timberwolves":"MIN","New Orleans Pelicans":"NOP",
+ "New York Knicks":"NYK","Oklahoma City Thunder":"OKC","Orlando Magic":"ORL","Philadelphia 76ers":"PHI",
+ "Phoenix Suns":"PHX","Portland Trail Blazers":"POR","Sacramento Kings":"SAC","San Antonio Spurs":"SAS",
+ "Toronto Raptors":"TOR","Utah Jazz":"UTA","Washington Wizards":"WAS"}
 
-def logs(season):
-    df = playergamelogs.PlayerGameLogs(season_nullable=season, timeout=60).get_data_frames()[0]
-    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"]); return df
-
-def team_ctx(season):
-    d = leaguedashteamstats.LeagueDashTeamStats(season=season, measure_type_detailed="Advanced",
-                                                timeout=60).get_data_frames()[0]
-    lg_d, lg_p = d.DEF_RATING.mean(), d.PACE.mean()
-    abbr = {t["id"]: t["abbreviation"] for t in nbateams.get_teams()}
-    return {abbr.get(r.TEAM_ID): (r.DEF_RATING/lg_d, r.PACE/lg_p) for r in d.itertuples()}
+def team_ctx(cur):
+    """Opponent defense and pace factors (1.0 = league average) from this season's box scores."""
+    tg = cur.groupby(["GAME_ID", "TEAM_ABBREVIATION", "OPP"]).PTS.sum().reset_index()
+    tg.columns = ["GAME_ID", "TEAM", "OPP", "FOR"]
+    m = tg.merge(tg[["GAME_ID", "TEAM", "FOR"]].rename(columns={"TEAM":"OPP", "FOR":"AGAINST"}), on=["GAME_ID", "OPP"])
+    t = m.groupby("TEAM").agg(f=("FOR", "mean"), a=("AGAINST", "mean"), n=("FOR", "size"))
+    lg = t.f.mean()
+    w = t.n/(t.n + 5)   # shrink small samples toward average
+    return {tm: (1 + w[tm]*(r.a/lg - 1), 1 + w[tm]*((r.f + r.a)/2/lg - 1)) for tm, r in t.iterrows()}
 
 def injuries():
     j = requests.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries",
                      headers=HDR, timeout=30).json()
-    return {i["athlete"]["displayName"]: i.get("status", "")
+    return {norm(i["athlete"]["displayName"]): i.get("status", "")
             for t in j.get("injuries", []) for i in t.get("injuries", [])}
 
 def play_prob(inj, name):
-    s = inj.get(name, "").lower()
+    s = inj.get(norm(name), "").lower()
     return next((v for k, v in P_PLAY.items() if k in s), 1.0)
 
 def odds_events():
@@ -75,7 +81,8 @@ def teammate_boost(cur, team, player, inj):
     g["u"] = (g.fga + 0.44*g.fta + g.tov) * g.mn / 36
     tot = g.u.sum()
     if tot <= 0: return 0.0
-    missing = sum((row.u/tot) * (1 - play_prob(inj, nm)) for nm, row in g.iterrows() if nm != player)
+    me = norm(player)
+    missing = sum((row.u/tot) * (1 - play_prob(inj, nm)) for nm, row in g.iterrows() if norm(nm) != me)
     missing = min(missing, 0.6)
     return float(min(0.25, 0.5 * missing / (1 - missing)))
 
@@ -114,25 +121,26 @@ def p_over(mu, line, var_extra, stat):
     return float(st.poisson.sf(k, mu))
 
 def main():
-    cur = logs(SEASON)
-    prev = pd.concat([logs(s) for s in PREV])
-    ctx = team_ctx(SEASON); inj = injuries(); sp = spreads()
+    hist = update_history()
+    cur = hist[hist.GAME_DATE >= SEASON_START]; prev = hist[hist.GAME_DATE < SEASON_START]
+    print("history rows", len(hist), "current-season rows", len(cur))
+    ctx = team_ctx(cur) if len(cur) else {}
+    inj = injuries(); sp = spreads()
     rows = []
     for ev in odds_events():
         try: rows += props(ev)
         except Exception as e: print("odds fail", e)
-    teams = {t["full_name"]: t["abbreviation"] for t in nbateams.get_teams()}
     df = pd.DataFrame(rows); out = []
     if not df.empty:
         for (player, mkt), g in df.groupby(["player","market"]):
-            stat = MARKETS[mkt]
-            c = cur[cur.PLAYER_NAME == player]; p = prev[prev.PLAYER_NAME == player]
+            stat = MARKETS[mkt]; k = norm(player)
+            c = cur[cur.KEY == k]; p = prev[prev.KEY == k]
             if len(c) + len(p) < 15: continue
             pp = play_prob(inj, player)
             if pp == 0: continue
             ev = g.iloc[0]["game"]
             team = (c if len(c) else p).sort_values("GAME_DATE").iloc[-1].TEAM_ABBREVIATION
-            home, away = teams.get(ev["home_team"]), teams.get(ev["away_team"])
+            home, away = TEAM_ABBR.get(ev["home_team"]), TEAM_ABBR.get(ev["away_team"])
             opp = away if team == home else home
             od, op = ctx.get(opp, (1, 1)); _, own = ctx.get(team, (1, 1))
             b2b = bool(len(c) and (pd.Timestamp(ev["commence_time"]).tz_localize(None) - c.GAME_DATE.max()).days <= 1)
@@ -147,7 +155,7 @@ def main():
                 p_over=round(po, 3), mkt_p_over=round(fair, 3), edge=round((po-fair)*pp, 3),
                 play_prob=pp, usage_boost=round(usage, 3), spread=spread,
                 pick="OVER" if po > fair else "UNDER", best_over=f"{bo.over:+d} {bo.book}",
-                best_under=f"{bu.under:+d} {bu.book}", status=inj.get(player, "").lower() or "healthy",
+                best_under=f"{bu.under:+d} {bu.book}", status=inj.get(k, "").lower() or "healthy",
                 tip=ev["commence_time"]))
         out.sort(key=lambda r: -abs(r["edge"]))
     json.dump({"updated": dt.datetime.utcnow().isoformat()+"Z", "props": out}, open(OUT, "w"))
