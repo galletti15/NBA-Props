@@ -1,7 +1,7 @@
 name: Totals refresh
 on:
   schedule:
-    - cron: "40 */6 * * *"
+    - cron: "40 15 * * *"
   workflow_dispatch:
 permissions:
   contents: write
@@ -18,16 +18,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests
-      - run: python totals_pipeline.py
+      - run: python free_plan_totals.py
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-      - name: Publish totals data
+      - name: Publish totals and daily credit cache
         run: |
           git config user.name bot
           git config user.email bot@x
-          git add docs/totals.json
+          git add docs/totals.json data/free-plan-totals.json
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Refresh game and team totals"
+          git commit -m "Refresh free-plan totals"
           for attempt in 1 2 3; do
             git pull --rebase && git push && exit 0
             sleep 5
