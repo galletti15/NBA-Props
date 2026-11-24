@@ -21,6 +21,52 @@ TEAM_ABBR = {"Atlanta Hawks":"ATL","Boston Celtics":"BOS","Brooklyn Nets":"BKN",
  "Phoenix Suns":"PHX","Portland Trail Blazers":"POR","Sacramento Kings":"SAC","San Antonio Spurs":"SAS",
  "Toronto Raptors":"TOR","Utah Jazz":"UTA","Washington Wizards":"WAS"}
 
+class OddsAPIError(RuntimeError):
+    """Safe-to-log Odds API failure."""
+
+
+def odds_request(path, expected_type, **params):
+    if not KEY:
+        raise OddsAPIError('ODDS_API_KEY is missing')
+    try:
+        response = requests.get(BASE + path, params={'apiKey': KEY, **params}, timeout=30)
+    except requests.RequestException:
+        raise OddsAPIError(f'Odds API {path}: network error or timeout') from None
+    details = [f'Odds API {path}: HTTP {response.status_code}']
+    for header in ('x-requests-remaining', 'x-requests-used', 'x-requests-last'):
+        value = response.headers.get(header, '')
+        if value.isascii() and value.replace('.', '', 1).isdigit():
+            details.append(f'{header}={value}')
+    context = '; '.join(details)
+    try:
+        data = response.json()
+    except ValueError:
+        raise OddsAPIError(context + '; response is not valid JSON') from None
+    hints = {
+        'OUT_OF_USAGE_CREDITS': 'Usage credits exhausted',
+        'INVALID_API_KEY': 'API key rejected',
+        'MISSING_API_KEY': 'API key missing',
+        'INVALID_MARKET': 'Requested market rejected',
+    }
+    error_code = data.get('error_code') if isinstance(data, dict) else None
+    hint = hints.get(error_code) if isinstance(error_code, str) else None
+    if not 200 <= response.status_code < 300:
+        fallback = {401: 'Authentication or account authorization failed',
+                    403: 'Access denied', 429: 'Request limit reached'}.get(
+                        response.status_code, 'Provider request failed')
+        raise OddsAPIError(context + '; ' + (hint or fallback))
+    if isinstance(data, dict) and ('error_code' in data or 'message' in data):
+        raise OddsAPIError(context + '; ' + (hint or 'Provider returned an error object'))
+    if not isinstance(data, expected_type):
+        raise OddsAPIError(context + f'; expected {expected_type.__name__}, received {type(data).__name__}')
+    if expected_type is list:
+        required = {'id', 'commence_time', 'home_team', 'away_team'}
+        if any(not isinstance(event, dict) or not required.issubset(event) for event in data):
+            raise OddsAPIError(context + '; invalid game-list structure')
+    if expected_type is dict and not isinstance(data.get('bookmakers'), list):
+        raise OddsAPIError(context + '; missing or invalid bookmakers list')
+    return data
+
 def team_ctx(cur):
     """Opponent defense and pace factors (1.0 = league average) from this season's box scores."""
     tg = cur.groupby(["GAME_ID", "TEAM_ABBREVIATION", "OPP"]).PTS.sum().reset_index()
@@ -42,14 +88,14 @@ def play_prob(inj, name):
     return next((v for k, v in P_PLAY.items() if k in s), 1.0)
 
 def odds_events():
-    r = requests.get(f"{BASE}/events", params={"apiKey":KEY}, timeout=30).json()
-    cutoff = dt.datetime.utcnow() + dt.timedelta(hours=30)
-    return [e for e in r if pd.to_datetime(e["commence_time"]).tz_localize(None) < cutoff]
+    events = odds_request('/events', list)
+    now = pd.Timestamp.now(tz='UTC')
+    cutoff = now + pd.Timedelta(hours=30)
+    return [e for e in events if now < pd.to_datetime(e['commence_time'], utc=True) < cutoff]
 
 def spreads():
     """Home-team median spread per event id (negative = home favored)."""
-    r = requests.get(f"{BASE}/odds", params={"apiKey":KEY,"regions":"us","markets":"spreads",
-                     "oddsFormat":"american"}, timeout=30).json()
+    r = odds_request('/odds', list, regions='us', markets='spreads', oddsFormat='american')
     out = {}
     for e in r:
         pts = [o["point"] for b in e.get("bookmakers", []) for m in b["markets"]
@@ -58,8 +104,8 @@ def spreads():
     return out
 
 def props(ev):
-    r = requests.get(f"{BASE}/events/{ev['id']}/odds", params={"apiKey":KEY,"regions":"us",
-        "markets":",".join(MARKETS),"oddsFormat":"american"}, timeout=30).json()
+    r = odds_request(f"/events/{ev['id']}/odds", dict, regions='us',
+                     markets=','.join(MARKETS), oddsFormat='american')
     rows = []
     for b in r.get("bookmakers", []):
         for m in b["markets"]:
@@ -128,8 +174,12 @@ def main():
     inj = injuries(); sp = spreads()
     rows = []
     for ev in odds_events():
-        try: rows += props(ev)
-        except Exception as e: print("odds fail", e)
+        try:
+            rows += props(ev)
+        except OddsAPIError:
+            raise
+        except Exception as exc:
+            raise RuntimeError('NBA prop parsing failed: ' + type(exc).__name__) from None
     df = pd.DataFrame(rows); out = []
     if not df.empty:
         for (player, mkt), g in df.groupby(["player","market"]):
