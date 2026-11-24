@@ -1,0 +1,45 @@
+name: Restore NBA props snapshot
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/restore-nba-props.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recover original data without calling odds provider
+        run: |
+          git show 542c90bb9e36d744fe3d543f4d3a9df1b6e6fd63:docs/data.json > /tmp/nba-recovery.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/nba-recovery.json').read_text())
+          assert isinstance(data.get('props'), list) and data['props'], 'Snapshot must contain props'
+          data['stale'] = True
+          data['restored_from_commit'] = '542c90bb9e36d744fe3d543f4d3a9df1b6e6fd63'
+          data['message'] = 'RESTORED SNAPSHOT — NBA props from November 23, 2026 at 5:42 p.m. EST. These are saved projections and odds, NOT live lines. Some games have already started. Verify current lines and player status before use. Automatic NBA refreshes remain paused to conserve credits.'
+          Path('docs/data.json').write_text(json.dumps(data, allow_nan=False))
+          print('Restored', len(data['props']), 'props; original timestamp:', data['updated'])
+          PY
+      - name: Publish restored NBA data only
+        run: |
+          git config user.name bot
+          git config user.email bot@x
+          git add docs/data.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Restore NBA props snapshot with stale-data warning"
+          git push origin HEAD:main
