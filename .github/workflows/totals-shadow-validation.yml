@@ -1,0 +1,76 @@
+name: totals-shadow-validation
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Read latest published input only
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: published-input
+          persist-credentials: false
+          sparse-checkout: docs/totals.json
+          sparse-checkout-cone-mode: false
+      - name: Check out exact experimental commit
+        uses: actions/checkout@v4
+        with:
+          ref: c41c5cdccbcf24a1fe314d124628c31091120be5
+          path: experimental
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests
+      - name: Run offline tests
+        working-directory: experimental
+        run: python -m unittest discover -s tests -p test_totals_adapters.py -v 2>&1 | tee shadow-tests.log
+      - name: Prepare local NBA and NFL input snapshot
+        working-directory: experimental
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source = Path('../published-input/docs/totals.json')
+          data = json.loads(source.read_text())
+          data['leagues'] = [league for league in data.get('leagues', []) if league.get('league') in ('NBA', 'NFL')]
+          Path('docs/totals.json').write_text(json.dumps(data, allow_nan=False))
+          PY
+      - name: Run ESPN shadow comparison without publishing
+        working-directory: experimental
+        run: python totals_shadow.py
+      - name: Summarize results and reject empty validation
+        working-directory: experimental
+        run: |
+          python - <<'PY' | tee shadow-validation.log
+          import json
+          from collections import Counter
+          from pathlib import Path
+          data = json.loads(Path('data/totals-shadow.json').read_text())
+          methods = Counter()
+          projected = 0
+          for league in data['leagues']:
+              print(league['league'], 'errors:', league.get('errors', []))
+              for game in league['games']:
+                  shadow = game.get('shadow') or {}
+                  methods[shadow.get('method', 'error')] += 1
+                  projected += shadow.get('projection') is not None
+                  print(game['home'], 'vs', game['away'], shadow.get('method'), game.get('error'), game.get('input_warnings', {}))
+          print('Methods:', dict(methods))
+          print('Games with projections:', projected)
+          assert data.get('odds_requests') == 0 and data.get('shadow_only') is True
+          assert projected > 0, 'No usable projections; inspect input freshness and ESPN errors'
+          PY
+      - name: Upload shadow results and logs only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: totals-shadow-validation
+          path: |
+            experimental/data/totals-shadow.json
+            experimental/shadow-tests.log
+            experimental/shadow-validation.log
+          if-no-files-found: warn
