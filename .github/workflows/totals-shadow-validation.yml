@@ -53,12 +53,21 @@ jobs:
           methods = Counter()
           projected = 0
           for league in data['leagues']:
-              print(league['league'], 'errors:', league.get('errors', []))
+              print('==', league['league'], 'errors:', league.get('errors', []))
               for game in league['games']:
                   shadow = game.get('shadow') or {}
+                  projection = shadow.get('projection')
+                  published = (game.get('published_projection') or {}).get('total')
                   methods[shadow.get('method', 'error')] += 1
-                  projected += shadow.get('projection') is not None
-                  print(game['home'], 'vs', game['away'], shadow.get('method'), game.get('error'), game.get('input_warnings', {}))
+                  if projection is None:
+                      print(game['home'], 'vs', game['away'], '| no projection |', game.get('error'))
+                      continue
+                  projected += 1
+                  diff = None if published is None else round(projection['total'] - published, 1)
+                  print(game['home'], 'vs', game['away'], '| old', published, '| new', projection['total'], '| diff', diff, '| H', projection['home'], 'A', projection['away'], '|', shadow['method'], '| opp', shadow.get('expected_opportunities'))
+                  warnings = game.get('input_warnings', {})
+                  if any(warnings.values()):
+                      print('   warnings:', warnings)
           print('Methods:', dict(methods))
           print('Games with projections:', projected)
           assert data.get('odds_requests') == 0 and data.get('shadow_only') is True
