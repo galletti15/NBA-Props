@@ -8,6 +8,20 @@ from totals_model_v2 import project, timestamp
 from espn_totals_adapters import load_history
 
 OUTPUT = Path("data/totals-shadow.json")
+TEAM_ALIASES = {"NBA": {"losangelesclippers": ("laclippers", "clippers")}}
+
+
+def find_team(index, name, league, key):
+    """Exact ESPN-name match first; documented aliases only after an exact miss."""
+    normalized = key(name)
+    found = index.get(normalized)
+    if found:
+        return found
+    for alias in TEAM_ALIASES.get(league, {}).get(normalized, ()):
+        found = index.get(alias)
+        if found:
+            return found
+    return None
 
 
 def records(history):
@@ -52,8 +66,8 @@ def build(saved, provider, engine=project, now=None):
                 row = {field: game[field] for field in ("home", "away", "start")}
                 row.update(published_projection=game.get("projection"), shadow=None)
                 try:
-                    hi = index.get(provider.key(game["home"]))
-                    ai = index.get(provider.key(game["away"]))
+                    hi = find_team(index, game["home"], label, provider.key)
+                    ai = find_team(index, game["away"], label, provider.key)
                     if not hi or not ai or hi == ai:
                         raise ValueError("Team match unavailable")
                     if label in ("NBA", "NFL"):
