@@ -10,7 +10,7 @@ jobs:
       - name: Check out exact experimental commit
         uses: actions/checkout@v4
         with:
-          ref: f55c245f7f1ff1d4515207cb892431266b4d72c7
+          ref: 30d00978d95bb1a173b54fdde0366b425ced9fde
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -20,6 +20,8 @@ jobs:
         run: python -m unittest discover -s tests -v 2>&1 | tee shadow-tests.log
       - name: Run backtest on completed games
         run: python totals_backtest.py 2>&1 | tee backtest.log
+      - name: Run diagnostics on backtest results
+        run: python totals_backtest_diagnostics.py 2>&1 | tee diagnostics.log
       - name: Upload backtest results and logs only
         if: always()
         uses: actions/upload-artifact@v4
@@ -27,6 +29,8 @@ jobs:
           name: totals-backtest
           path: |
             data/totals-backtest.json
+            data/totals-backtest-diagnostics.json
             shadow-tests.log
             backtest.log
+            diagnostics.log
           if-no-files-found: warn
