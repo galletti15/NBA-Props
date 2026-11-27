@@ -12,7 +12,7 @@ NOTE = ('FREE PLAN: game-total odds fetched at most once per league per UTC day.
         'Sportsbook team-total requests disabled; team-score projections remain available when history matches. '
         'NBA/NFL player-prop automatic refreshes are paused; manual runs still spend credits. '
         'Experimental recent-score model, not backtested; no pace, injury, weather or schedule-strength adjustments. '
-        'Up to 8 games per league in the next 7 days. Decimal odds. '
+        'NBA/NFL: up to 8 games in the next 7 days. NCAAF: all games in the next 7 days. NCAAB: all games in the next 24 hours. Decimal odds. '
         'Cached odds retain sportsbook timestamps and may be stale. '
         'A 25-credit reserve pauses further requests after a low balance is reported.')
 

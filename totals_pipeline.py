@@ -1,5 +1,5 @@
 """Experimental score-based totals baseline; no betting probabilities."""
-import json, os, re, unicodedata
+import json, os, re, time, unicodedata
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import requests
@@ -10,11 +10,15 @@ SPORTS = {
     'NCAAF': ('americanfootball_ncaaf', 'football/college-football', 3, 8),
     'NCAAB': ('basketball_ncaab', 'basketball/mens-college-basketball', 5, 12),
 }
+MAX_GAMES = {'NBA': 8, 'NFL': 8, 'NCAAF': None, 'NCAAB': None}
+WINDOW_DAYS = {'NBA': 7, 'NFL': 7, 'NCAAF': 7, 'NCAAB': 1}
+START = time.monotonic()
+HISTORY_SECONDS = 900
 NOW = datetime.now(timezone.utc)
 CACHE = {}
 BUDGET = 16
 RESERVE = 250
-NOTE = 'Experimental score-average baseline, not backtested. No pace, possession, injury, weather or strength-of-schedule adjustments. No calibrated probabilities. Up to 8 upcoming games per league, next 7 days; actual team-total odds checked for first 2 games per league. Other team lines are unavailable, not inferred. Odds refresh every 6 hours; decimal prices. History: latest 12 basketball or 8 football games, current plus prior season.'
+NOTE = 'Experimental score-average baseline, not backtested. No pace, possession, injury, weather or strength-of-schedule adjustments. No calibrated probabilities. NBA/NFL: up to 8 upcoming games in the next 7 days. NCAAF: all games in the next 7 days. NCAAB: all games in the next 24 hours. Actual team-total odds checked for first 2 games per league. Other team lines are unavailable, not inferred. Odds refresh every 6 hours; decimal prices. History: latest 12 basketball or 8 football games, current plus prior season.'
 
 def key(s):
     s = unicodedata.normalize('NFKD', str(s)).encode('ascii','ignore').decode().lower()
@@ -117,23 +121,26 @@ def quotes(data,market,team=None):
 def build_league(label,config):
     sport,route,minimum,count = config
     events = odds(sport,'/odds',markets='totals')
-    events = sorted((e for e in events if NOW < datetime.fromisoformat(e['commence_time'].replace('Z','+00:00')) < NOW+timedelta(days=7)),key=lambda e:e['commence_time'])
+    events = sorted((e for e in events if NOW < datetime.fromisoformat(e['commence_time'].replace('Z','+00:00')) < NOW+timedelta(days=WINDOW_DAYS.get(label,7))),key=lambda e:e['commence_time'])
     result = dict(league=label,games=[],errors=[],available_games=len(events))
     if not events:
         return result
     idx = team_index(route)
-    for n,e in enumerate(events[:8]):
+    for n,e in enumerate(events[:MAX_GAMES.get(label,8)]):
         home,away = e['home_team'],e['away_team']
         game = dict(home=home,away=away,start=e['commence_time'],projection=None,sample=None,game_quotes=quotes(e,'totals'),home_quotes=[],away_quotes=[],team_odds_status='Not checked: per-run team-total limit',model_status='Team names not matched exactly to ESPN')
         try:
-            hi,ai = idx.get(key(home)),idx.get(key(away))
-            if hi and ai:
-                h,a = history(route,hi,count),history(route,ai,count)
-                game['sample'] = dict(home=len(h),away=len(a))
-                p = estimate(h,a,minimum)
-                game['model_status'] = 'Insufficient completed-game history' if p is None else 'Experimental score-average baseline'
-                if p:
-                    game['projection'] = dict(home=p[0],away=p[1],total=round(p[0]+p[1],1))
+            if time.monotonic()-START > HISTORY_SECONDS:
+                game['model_status'] = 'Skipped: refresh time budget reached'
+            else:
+                hi,ai = idx.get(key(home)),idx.get(key(away))
+                if hi and ai:
+                    h,a = history(route,hi,count),history(route,ai,count)
+                    game['sample'] = dict(home=len(h),away=len(a))
+                    p = estimate(h,a,minimum)
+                    game['model_status'] = 'Insufficient completed-game history' if p is None else 'Experimental score-average baseline'
+                    if p:
+                        game['projection'] = dict(home=p[0],away=p[1],total=round(p[0]+p[1],1))
         except Exception as exc:
             game['model_status'] = 'History unavailable: '+type(exc).__name__
         if n<2:
